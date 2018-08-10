@@ -1,0 +1,140 @@
+From ef912a59b1ba59d978d7cd3f80a91c2735081cd3 Mon Sep 17 00:00:00 2001
+From: Corteggiani <nassim.corteggiani@maximintegrated.com>
+Date: Fri, 10 Aug 2018 17:29:49 +0200
+Subject: [PATCH] Inception support
+
+---
+ examples/rules.mk                                  | 43 ++++++++++++++++++++--
+ .../stm32/l1/stm32l-discovery/miniblink/Makefile   |  2 +
+ .../l1/stm32l-discovery/miniblink/miniblink.c      |  8 ++--
+ 3 files changed, 46 insertions(+), 7 deletions(-)
+
+diff --git a/examples/rules.mk b/examples/rules.mk
+index efef7cd..69cc5c1 100644
+--- a/examples/rules.mk
++++ b/examples/rules.mk
+@@ -46,12 +46,20 @@ OPT		:= -Os
+ DEBUG		:= -ggdb3
+ CSTD		?= -std=c99
+ 
++LLVM-AS = llvm-as
++INCEPTION-CL = inception-cl
++#INCEPTION_FLAGS = -enable-collision-solver
++CLANG = clang
++CLANG_FLAGS = -mthumb --target=thumbv7m-eabi -mcpu=cortex-m3
++CLANG_FLAGS += -emit-llvm -g -S -DKLEE
++CLANG_FLAGS += $(DEFS)
++LLVM-LINK = llvm-link
+ 
+ ###############################################################################
+ # Source files
+ 
+ OBJS		+= $(BINARY).o
+-
++LLOBJS          += $(BINARY).ll
+ 
+ ifeq ($(strip $(OPENCM3_DIR)),)
+ # user has not specified the library path, so we try to detect it
+@@ -145,13 +153,16 @@ LDLIBS		+= -Wl,--start-group -lc -lgcc -lnosys -Wl,--end-group
+ .SECONDEXPANSION:
+ .SECONDARY:
+ 
+-all: elf
+-
++all: elf ir_merged
++ir_merged: $(BINARY)_merged.bc
++ir: $(BINARY).bc
+ elf: $(BINARY).elf
+ bin: $(BINARY).bin
+ hex: $(BINARY).hex
+ srec: $(BINARY).srec
+ list: $(BINARY).list
++run-klee: ir_merged
++	klee --allocate-determ --allocate-determ-start-address 0xf0000000 $(BINARY)_merged.bc
+ 
+ images: $(BINARY).images
+ flash: $(BINARY).flash
+@@ -176,6 +187,30 @@ print-%:
+ %.images: %.bin %.hex %.srec %.list %.map
+ 	@#printf "*** $* images generated ***\n"
+ 
++%.ll: %.c
++	@echo CLANG Compiling
++	@$(CLANG) $(CLANG_FLAGS) $(*).c -o $(*).ll
++
++%_merged.bc:	%.elf.ll
++	@echo Creating $(*)_merged.bc
++	@$(LLVM-AS) $(*).elf.ll -o $(*)_merged.bc
++
++%.elf.ll: %.elf %.bc
++	@echo Creating $(*)_merged.bc
++	@$(INCEPTION-CL) $(INCEPTION_FLAGS) $(*).elf $(*).bc
++
++%.bc: $(LLOBJS)
++	@echo LLVM Linking $(*).bc
++	@$(LLVM-LINK) -S $(LLOBJS)  -o $(*).bc
++	sed -i 's/ linkonce_odr / /g' $(*).ll
++	sed -i 's/ internal / /g' $(*).ll
++	sed -ri 's/external global ([\._%0-9a-zA-Z]*)\*/ global \1\* undef/g' $(*).ll
++	sed -ri 's/external global (.*)/ global \1 zeroinitializer/g' $(*).ll
++	sed -ri 's/extern_weak global ([0-9a-zA-Z]*)/ global \1 0/g' $(*).ll
++	echo "[LLVM-AS]       $(*).ll"
++	@echo Creating $(*).bc
++	@$(LLVM-AS) $(*).ll -o $(*).bc
++
+ %.bin: %.elf
+ 	@#printf "  OBJCOPY $(*).bin\n"
+ 	$(Q)$(OBJCOPY) -Obinary $(*).elf $(*).bin
+@@ -211,6 +246,8 @@ print-%:
+ clean:
+ 	@#printf "  CLEAN\n"
+ 	$(Q)$(RM) *.o *.d *.elf *.bin *.hex *.srec *.list *.map generated.* ${OBJS} ${OBJS:%.o:%.d}
++	$(Q)$(RM) *.ll *.bc *.elf.ll
++	$(Q)$(RM) -rf klee-*
+ 
+ stylecheck: $(STYLECHECKFILES:=.stylecheck)
+ styleclean: $(STYLECHECKFILES:=.styleclean)
+diff --git a/examples/stm32/l1/stm32l-discovery/miniblink/Makefile b/examples/stm32/l1/stm32l-discovery/miniblink/Makefile
+index 199baed..4a9e5dd 100644
+--- a/examples/stm32/l1/stm32l-discovery/miniblink/Makefile
++++ b/examples/stm32/l1/stm32l-discovery/miniblink/Makefile
+@@ -21,5 +21,7 @@ BINARY = miniblink
+ 
+ LDSCRIPT = $(OPENCM3_DIR)/lib/stm32/l1/stm32l15xxb.ld
+ 
++DEFS=-DKLEE
++
+ include ../../Makefile.include
+ 
+diff --git a/examples/stm32/l1/stm32l-discovery/miniblink/miniblink.c b/examples/stm32/l1/stm32l-discovery/miniblink/miniblink.c
+index c6a832c..e8b5c2c 100644
+--- a/examples/stm32/l1/stm32l-discovery/miniblink/miniblink.c
++++ b/examples/stm32/l1/stm32l-discovery/miniblink/miniblink.c
+@@ -28,11 +28,11 @@ static void gpio_setup(void)
+ 	/* Manually: */
+ 	//RCC_AHBENR |= RCC_AHBENR_GPIOBEN;
+ 	/* Using API functions: */
+-	rcc_periph_clock_enable(RCC_GPIOB);
++	rcc_periph_clock_enable(RCC_GPIOA);
+ 
+ 	/* Set GPIO6 (in GPIO port B) to 'output push-pull'. */
+ 	/* Using API functions: */
+-	gpio_mode_setup(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO6);
++	gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO5);
+ }
+ 
+ int main(void)
+@@ -60,8 +60,8 @@ int main(void)
+ 		//	__asm__("nop");
+ 
+ 		/* Using API function gpio_toggle(): */
+-		gpio_toggle(GPIOB, GPIO6);	/* LED on/off */
+-		for (i = 0; i < 1000000; i++) {	/* Wait a bit. */
++		gpio_toggle(GPIOA, GPIO5);	/* LED on/off */
++		for (i = 0; i < 10000; i++) {	/* Wait a bit. */
+ 			__asm__("nop");
+ 		}
+ 	}
+-- 
+2.7.4
+
